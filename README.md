@@ -1,7 +1,7 @@
 # React LLM App (Streaming + Vision + Image Gen + Email)
 
 Ứng dụng React (Vite + Tailwind) kèm backend Node/Express hỗ trợ:
-- **Text**: hỏi đáp, Dịch sang Pháp, Giải thích như 5 tuổi, Keyword, Sinh mã Python
+- **Text**: hỏi đáp, Dịch sang Pháp, Giải thích như 5 tuổi, Tìm Keyword, Sinh mã Python
 - **Streaming** cho tác vụ văn bản (`/api/llm/stream`)
 - **Vision**: Mô tả ảnh, OCR, Phát hiện đối tượng, ALT text
 - **Image Generation (OpenAI)**: Tạo ảnh từ mô tả
@@ -23,11 +23,18 @@ npm i express cors multer -w . # (hoặc cd server && npm i ... nếu tách)
 Tạo file `.env` ở **thư mục gốc backend** (cùng cấp `server/server.js`) hoặc export trong shell. Tham khảo `.env.example`:
 
 ```
-PROVIDER=openai
+PROVIDER=xxx
+
 OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxx
 OPENAI_MODEL=gpt-4o-mini
-# OLLAMA_MODEL=llama3.2-vision
-# PORT=3000
+
+OLLAMA_MODEL=llama3.2-vision
+
+DEEPSEEK_API_KEY=xxx
+DEEPSEEK_MODEL=deepseek-chat
+
+PORT=3000
+
 ```
 
 - **OpenAI**: hỗ trợ text/vision + **bắt buộc** cho image gen.
@@ -71,8 +78,3 @@ Proxy Vite chuyển `/api/*` → `http://localhost:3000` (cấu hình trong `vit
 - Nhập bối cảnh tại ô văn bản.
 - Chọn người nhận (tùy), giọng điệu, độ dài → **Soạn email**.
 - Dùng **Copy Subject/Body** hoặc **Tải .eml**.
-
-## 5) Tuỳ biến
-- Thêm tác vụ: sửa `taskInstruction()` trong `server/server.js` + thêm nút ở UI.
-- Ép kết quả JSON: thêm "Return valid JSON only" vào prompt, parse ở client.
-- Nâng cấp streaming: chuyển sang SSE/WebSocket nếu cần.
