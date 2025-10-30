@@ -232,8 +232,9 @@ const sendOnce = async (task) => {
         <div className="flex flex-col items-start">
           <h1 className="text-2xl font-semibold">React LLM App</h1>
           <nav className="text-sm text-slate-600 dark:text-slate-300">
-            Văn bản • Thị giác • Tạo ảnh • Soạn email • Streaming
+            2591302 Thanh-Binh Nguyen , 2591303 Dinh-Hiep Huynh, 2591322 Minh-Sang Tran, 2591311 Nguyen-Tuan-Kiet Le
           </nav>
+           
         </div>
         <button
           onClick={() => setDark(!dark)}
@@ -246,7 +247,7 @@ const sendOnce = async (task) => {
 
       {/* Ô nhập dùng chung */}
       <Card>
-        <CardHeader><CardTitle>Nhập văn bản (dùng chung cho các tab)</CardTitle></CardHeader>
+        <CardHeader><CardTitle>Nhập văn bản: </CardTitle></CardHeader>
         <CardContent>
           <div className="flex gap-2 mb-2">
             <select value={provider} onChange={onProviderChange} className="select">
