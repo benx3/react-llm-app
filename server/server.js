@@ -13,10 +13,21 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 
-const PROVIDER = process.env.PROVIDER || "openai";
+//const PROVIDER = process.env.PROVIDER || "openai";
+const PROVIDERS = ["openai", "deepseek", "ollama"]; 
+
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
+
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "llama3.2-vision";
+const OLLAMA_HOST = process.env.OLLAMA_HOST || "http://localhost:11434";
+
+const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || "";
+const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || "deepseek-chat";
+
+
+
+
 
 function taskInstruction(task) {
   switch (task) {
@@ -51,6 +62,27 @@ Rules:
       return "Help with the user's request clearly and briefly.";
   }
 }
+//---------- Non-stream callDeepSeek calls ----------
+async function callDeepSeek(model, prompt) {
+  if (!DEEPSEEK_API_KEY) throw new Error("DEEPSEEK_API_KEY missing.");
+  const resp = await fetch("https://api.deepseek.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model: model || DEEPSEEK_MODEL,
+      messages: [
+        { role: "system", content: "Bạn là trợ lý AI hữu ích, trả lời bằng tiếng Việt." },
+        { role: "user", content: prompt }
+      ]
+    })
+  });
+  const data = await resp.json();
+  if (!resp.ok) throw new Error(data?.error?.message || resp.statusText);
+  return data?.choices?.[0]?.message?.content || "";
+}
 
 // ---------- Non-stream OpenAI & Ollama calls ----------
 async function callOpenAI(systemPrompt, userText) {
@@ -71,7 +103,7 @@ async function callOpenAI(systemPrompt, userText) {
 
 async function callOllama(systemPrompt, userText) {
   const prompt = `System: ${systemPrompt}\n\nUser: ${userText}\n\nAssistant:`;
-  const resp = await fetch("http://localhost:11434/api/generate", {
+  const resp = await fetch(OLLAMA_HOST + "/api/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ model: OLLAMA_MODEL, prompt, stream: false, options: { temperature: 0.2 } })
@@ -88,80 +120,71 @@ async function callOllama(systemPrompt, userText) {
 // SSE: hỗ trợ OpenAI + Ollama
 app.get("/api/llm/sse", async (req, res) => {
   try {
-    const provider = String(req.query.provider || process.env.PROVIDER || "openai");
-    const model = String(req.query.model || (provider === "ollama" ? OLLAMA_MODEL : OPENAI_MODEL));
+    const provider = String(req.query.provider || "openai");
+    const model = String(req.query.model || "");
     const task = String(req.query.task || "");
-    const promptRaw = String(req.query.prompt || req.query.text || "");
-    const instruction = taskInstruction(task);
-    const userPrompt = promptRaw?.trim()
-      ? `System: ${instruction}\n\nUser: ${promptRaw}\n\nAssistant:`
-      : `System: ${instruction}\n\nAssistant:`;
+    const prompt = String(req.query.prompt || req.query.text || "");
+    console.log("Provider: " + provider);
+    if (!PROVIDERS.includes(provider)) {
+      res.writeHead(400, { "Content-Type": "text/event-stream" });
+      res.write(`data: ERROR: Provider không hỗ trợ\n\n`);
+      return res.end();
+    }
+    
+    const finalPrompt = `System: ${taskInstruction(task)}\n\nUser: ${prompt}\n\nAssistant:`;
 
-    // Header SSE
+    // SSE headers
     res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
     res.setHeader("Cache-Control", "no-cache, no-transform");
     res.setHeader("Connection", "keep-alive");
     res.flushHeaders?.();
-
-    // Ping giữ kết nối
-    const ping = setInterval(() => {
-      try { res.write(`: ping\n\n`); } catch {}
-    }, 15000);
+    const ping = setInterval(() => { try { res.write(`: ping\n\n`); } catch {} }, 15000);
     res.on("close", () => clearInterval(ping));
 
-    let upstream;
+    let upstream, headers, body, url;
 
     if (provider === "openai") {
-      if (!OPENAI_API_KEY) {
-        res.write(`data: ERROR: OPENAI_API_KEY missing\n\n`);
-        res.write(`data: [END]\n\n`);
-        return res.end();
-      }
-      upstream = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${OPENAI_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model,
-          stream: true,
-          messages: [
-            { role: "system", content: "You are a helpful assistant. Always reply in Vietnamese unless asked otherwise." },
-            { role: "user", content: userPrompt }
-          ],
-          temperature: 0.2
-        }),
+      if (!OPENAI_API_KEY) { res.write(`data: ERROR: OPENAI_API_KEY missing\n\n`); res.end(); return; }
+      url = "https://api.openai.com/v1/chat/completions";
+      headers = { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" };
+      body = JSON.stringify({
+        model: model || OPENAI_MODEL,
+        stream: true,
+        messages: [
+          { role: "system", content: "Bạn là trợ lý AI hữu ích, trả lời bằng tiếng Việt." },
+          { role: "user", content: finalPrompt }
+        ],
+        temperature: 0.2
       });
-    } else if (provider === "ollama") {
-      upstream = await fetch("http://localhost:11434/api/generate", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Accept": "application/x-ndjson", // quan trọng cho NDJSON
-        },
-        body: JSON.stringify({
-          model,
-          prompt: userPrompt,
-          stream: true,
-          options: { temperature: 0.2 }
-        }),
+    } else if (provider === "deepseek") {
+     
+      if (!DEEPSEEK_API_KEY) { res.write(`data: ERROR: DEEPSEEK_API_KEY missing\n\n`); res.end(); return; }
+      url = "https://api.deepseek.com/chat/completions";
+      headers = { Authorization: `Bearer ${DEEPSEEK_API_KEY}`, "Content-Type": "application/json" };
+      body = JSON.stringify({
+        model: model || DEEPSEEK_MODEL,
+        stream: true,
+        messages: [
+          { role: "system", content: "Bạn là trợ lý AI hữu ích, trả lời bằng tiếng Việt." },
+          { role: "user", content: finalPrompt }
+        ],
+        temperature: 0.2
       });
-    } else {
-      res.write(`data: ERROR: Provider không hỗ trợ: ${provider}\n\n`);
-      res.write(`data: [END]\n\n`);
-      return res.end();
+    } else { // ollama
+      url = `${OLLAMA_HOST}/api/generate`;
+      headers = { "Content-Type": "application/json", "Accept": "application/x-ndjson" };
+      body = JSON.stringify({ model: model || OLLAMA_MODEL, prompt: finalPrompt, stream: true, options: { temperature: 0.2 } });
     }
 
+    upstream = await fetch(url, { method: "POST", headers, body });
     if (!upstream.ok) {
-      const err = await upstream.text().catch(() => `${upstream.statusText}`);
+      const err = await upstream.text();
       res.write(`data: ERROR: ${JSON.stringify(err)}\n\n`);
       res.write(`data: [END]\n\n`);
-      clearInterval(ping);
       return res.end();
     }
 
-    // Đọc stream
+    // đọc stream
     const reader = upstream.body.getReader();
     const decoder = new TextDecoder();
     let buf = "";
@@ -169,21 +192,16 @@ app.get("/api/llm/sse", async (req, res) => {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-
       buf += decoder.decode(value, { stream: true });
-      const lines = buf.split(/\r?\n/);
-      buf = lines.pop() ?? "";
+      const lines = buf.split(/\r?\n/); buf = lines.pop() ?? "";
 
       for (const line of lines) {
         const s = line.trim();
         if (!s) continue;
 
-        // OpenAI: "data: {...}" hoặc "[DONE]"
-        if (provider === "openai") {
+        if (provider === "openai" || provider === "deepseek") {
           if (s === "data: [DONE]" || s === "[DONE]") {
-            res.write(`data: [END]\n\n`);
-            clearInterval(ping);
-            return res.end();
+            res.write(`data: [END]\n\n`); res.end(); clearInterval(ping); return;
           }
           const jsonStr = s.startsWith("data:") ? s.slice(5).trim() : s;
           try {
@@ -191,65 +209,47 @@ app.get("/api/llm/sse", async (req, res) => {
             const token = chunk?.choices?.[0]?.delta?.content;
             if (token) res.write(`data: ${token.replace(/\n/g, "\\n")}\n\n`);
           } catch {}
-          continue;
-        }
-
-        // Ollama: NDJSON mỗi dòng là JSON {response, done, error}
-        if (provider === "ollama") {
+        } else {
+          // Ollama NDJSON
           try {
             const obj = JSON.parse(s);
-            if (obj?.error) {
-              res.write(`data: ERROR: ${String(obj.error)}\n\n`);
-              res.write(`data: [END]\n\n`);
-              clearInterval(ping);
-              return res.end();
-            }
-            if (typeof obj?.response === "string") {
-              res.write(`data: ${obj.response.replace(/\n/g, "\\n")}\n\n`);
-            }
-            if (obj?.done) {
-              res.write(`data: [END]\n\n`);
-              clearInterval(ping);
-              return res.end();
-            }
-          } catch {
-            // bỏ qua dòng không phải JSON
-          }
+            if (obj?.error) { res.write(`data: ERROR: ${obj.error}\n\n`); }
+            if (obj?.response) res.write(`data: ${obj.response.replace(/\n/g, "\\n")}\n\n`);
+            if (obj?.done) { res.write(`data: [END]\n\n`); res.end(); clearInterval(ping); return; }
+          } catch {}
         }
       }
     }
-
-    res.write(`data: [END]\n\n`);
-    clearInterval(ping);
-    res.end();
+    res.write(`data: [END]\n\n`); res.end(); clearInterval(ping);
   } catch (err) {
-    try {
-      res.write(`data: ERROR: ${JSON.stringify(String(err))}\n\n`);
-      res.write(`data: [END]\n\n`);
-    } catch {}
+    try { res.write(`data: ERROR: ${JSON.stringify(String(err))}\n\n`); res.write(`data: [END]\n\n`); } catch {}
     res.end();
   }
 });
 
+
 // ---------- Streaming proxies ----------
 app.post("/api/llm/stream", async (req, res) => {
   try {
-    const { task, text } = req.body || {};
+    const { task, text, provider, model } = req.body || {};
+    //const PROVIDER = String(req.query.provider || "openai");
+    //const model = String(req.query.model || "");
+     
     if (!text || typeof text !== "string") return res.status(400).end("Missing 'text'");
     const instruction = taskInstruction(task);
 
     res.setHeader("Content-Type", "text/plain; charset=utf-8");
     res.setHeader("Transfer-Encoding", "chunked");
 
-   if (PROVIDER === "ollama") {
+   if (provider === "ollama") {
   // Ghép prompt như trước
   const prompt = `System: ${instruction}\n\nUser: ${text}\n\nAssistant:`;
 
-  const r = await fetch("http://localhost:11434/api/generate", {
+  const r = await fetch(OLLAMA_HOST + "/api/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: OLLAMA_MODEL,
+      model: model,
       prompt,
       stream: true,                 // nhớ chữ thường
       options: { temperature: 0.2 },
@@ -339,7 +339,7 @@ async function callOpenAIWithImage(systemPrompt, imageUrlOrBase64) {
 
 async function callOllamaWithImage(systemPrompt, imageBase64) {
   const prompt = `System: ${systemPrompt}\n\nAssistant:`;
-  const resp = await fetch("http://localhost:11434/api/generate", {
+  const resp = await fetch(OLLAMA_HOST + "/api/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -357,17 +357,17 @@ async function callOllamaWithImage(systemPrompt, imageBase64) {
 
 app.post("/api/vision", upload.single("image"), async (req, res) => {
   try {
-    const { task, imageUrl } = req.body || {};
+    const { task, imageUrl, provider, model } = req.body || {};
     const instruction = taskInstruction(task);
     if (imageUrl && imageUrl.trim()) {
-      if (PROVIDER !== "openai") return res.status(400).json({ error: "For Ollama, please upload file." });
+      if (provider !== "openai") return res.status(400).json({ error: "For Ollama, please upload file." });
       const out = await callOpenAIWithImage(instruction, imageUrl.trim());
       return res.json({ result: out });
     }
     if (req.file?.buffer) {
       const mime = req.file.mimetype || "image/png";
       const dataUri = `data:${mime};base64,${req.file.buffer.toString("base64")}`;
-      const out = PROVIDER === "ollama" ?
+      const out = provider === "ollama" ?
         await callOllamaWithImage(instruction, dataUri) :
         await callOpenAIWithImage(instruction, dataUri);
       return res.json({ result: out });
@@ -391,6 +391,10 @@ async function callOpenAIImage(prompt, { n = 1, size = "1024x1024" } = {}) {
 app.post("/api/imagegen", async (req, res) => {
   try {
     const { prompt, n = 1, size = "1024x1024" } = req.body || {};
+    const PROVIDER = String(req.query.provider || "openai");
+    const model = String(req.query.model || "");
+    const task = String(req.query.task || "");
+
     if (!prompt || typeof prompt !== "string") return res.status(400).json({ error: "Thiếu 'prompt'." });
     if (PROVIDER !== "openai") return res.status(400).json({ error: "Chuyển qua  PROVIDER=openai để sinh ảnh tự động." });
     const images = await callOpenAIImage(prompt, { n, size });
@@ -400,13 +404,22 @@ app.post("/api/imagegen", async (req, res) => {
 
 app.post("/api/llm", async (req, res) => {
   try {
-    const { task, text } = req.body || {};
-    if (!text || typeof text !== "string") return res.status(400).json({ error: "Missing 'text'." });
+    const { provider = "openai", model, task, text } = req.body || {};
+    if (!text || typeof text !== "string") return res.status(400).json({ error: "Thiếu 'text'." });
+    if (!PROVIDERS.includes(provider)) return res.status(400).json({ error: "Provider không hỗ trợ" });
+
     const instruction = taskInstruction(task);
-    const out = PROVIDER === "ollama" ? await callOllama(instruction, text) : await callOpenAI(instruction, text);
+    const finalPrompt = `System: ${instruction}\n\nUser: ${text}\n\nAssistant:`;
+
+    let out = "";
+    if (provider === "openai") out = await callOpenAI("Bạn là trợ lý AI, trả lời bằng tiếng Việt.", finalPrompt);
+    else if (provider === "deepseek") out = await callDeepSeek(model, finalPrompt);
+    else if (provider === "ollama") out = await callOllama("Bạn là trợ lý AI, trả lời bằng tiếng Việt.", finalPrompt);
+
     res.json({ result: out });
-  } catch (e) { res.status(500).json({ error: String(e) }); }
+  } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
 });
+
 
 app.post("/api/email/eml", (req, res) => {
   const { to = "", from = "no-reply@example.com", subject = "", body = "" } = req.body || {};
@@ -427,4 +440,4 @@ ${body}
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server http://localhost:${PORT} (provider=${PROVIDER})`));
+app.listen(PORT, () => console.log(`Server http://localhost:${PORT}`));

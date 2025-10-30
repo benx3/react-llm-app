@@ -9,6 +9,69 @@ export default function App() {
   const [status, setStatus] = useState("");
   const [result, setResult] = useState("");
   const [activeTab, setActiveTab] = useState<"text"|"vision"|"image"|"email">("text");
+  
+  // ✅ thêm hai state này
+  const [streaming, setStreaming] = useState(false);
+  const [output, setOutput] = useState("");
+
+  const [provider, setProvider] = useState("openai"); // mặc định
+  const [model, setModel] = useState("gpt-4o-mini");
+  const [text, setText] = useState("");
+  const modelsFor = (p) => {
+  if (p === "openai") return ["gpt-4o-mini", "gpt-4o"];
+  if (p === "deepseek") return ["deepseek-chat", "deepseek-reasoner"];
+  return ["llama3.2", "llama3.2-vision"]; // Ollama
+};
+
+const onProviderChange = (e) => {
+  const p = e.target.value;
+  setProvider(p);
+  setModel(modelsFor(p)[0]);
+};
+
+const sendStream = (task) => {
+  const text = inputRef.current?.value || "";
+  if (!text.trim()) return;
+
+  const qs = new URLSearchParams({
+    provider,
+    model,
+    task,
+    prompt: text,
+  });
+
+  const es = new EventSource(`http://localhost:3000/api/llm/sse?${qs}`);
+
+  setStreaming(true);
+  setOutput("");
+
+  es.onmessage = (e) => {
+    if (e.data === "[END]") { 
+      es.close(); 
+      setStreaming(false);
+      return;
+    }
+    setOutput((prev) => prev + e.data.replace(/\\n/g, "\n"));
+  };
+
+  es.onerror = () => {
+    es.close();
+    setStreaming(false);
+  };
+};
+
+const sendOnce = async (task) => {
+  const text = inputRef.current?.value || "";
+  if (!text.trim()) return;
+
+  const r = await fetch("http://localhost:3000/api/llm", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ provider, model, task, text }),
+  });
+  const data = await r.json();
+  setOutput(data.result || data.error || "");
+};
 
   // Dark mode toggle (giữ nguyên)
   const [dark, setDark] = useState(
@@ -50,9 +113,9 @@ export default function App() {
   const textTasks = [
     ["summarize", "Tóm tắt"],
     ["translate_fr", "Dịch sang tiếng Pháp"],
-    ["explain_like_5", "Giải thích như 5 tuổi"],
-    ["extract_keywords", "Từ khóa"],
-    ["generate_python", "Sinh Python"],
+    ["explain_like_5", "Giải thích trẻ 5 tuổi"],
+    ["extract_keywords", "Trích suất từ khóa"],
+    ["generate_python", "Sinh Python code"],
   ] as const;
 
   // Actions
@@ -65,17 +128,17 @@ export default function App() {
 
     setResult("");
     setStatus("Đang xử lý…");
-
+    
     // gọi SSE backend: /api/llm/sse?task=...&text=...
     stopRef.current = startSSE(
       "/api/llm/sse",
-      { task, text },
+      { task, text, provider, model },
       (acc) => setResult(acc),        // mỗi token ghép vào acc và hiển thị
       () => { setStatus("Done."); stopRef.current = null; },
       (err) => { setStatus("Lỗi stream"); console.error(err); stopRef.current = null; }
     );
   }
-
+  
   function onFileChange() {
     const f = fileRef.current?.files?.[0];
     if (!f || !previewRef.current) return;
@@ -88,12 +151,16 @@ export default function App() {
     setStatus("Đang phân tích ảnh…"); setResult("");
     const form = new FormData();
     form.append("task", task);
+    form.append("provider", provider);
+    form.append("model", model);
+    
     const url = urlRef.current?.value.trim() || "";
     const file = fileRef.current?.files?.[0];
     if (url) form.append("imageUrl", url);
     if (file) form.append("image", file);
+    
     try {
-      const r = await fetch("/api/vision", { method: "POST", body: form });
+      const r = await fetch("/api/vision", { method: "POST", body: form});
       const j = await r.json();
       if (!r.ok) throw new Error(j.error || r.statusText);
       setResult(j.result || "(No content)"); setStatus("Done.");
@@ -107,7 +174,7 @@ export default function App() {
       const r = await fetch("/api/imagegen", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: imgPrompt, n: imgN, size: imgSize }),
+        body: JSON.stringify({ prompt: imgPrompt, n: imgN, size: imgSize, provider, model }),
       });
       const j = await r.json();
       if (!r.ok) throw new Error(j.error || r.statusText);
@@ -125,7 +192,7 @@ export default function App() {
       const r = await fetch("/api/llm", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ task: "draft_email", text: `Bối cảnh:\n${ctx}\n\nRàng buộc:\n${meta}` }),
+        body: JSON.stringify({ task: "draft_email", text: `Bối cảnh:\n${ctx}\n\nRàng buộc:\n${meta}`,provider, model }),
       });
       const j = await r.json();
       if (!r.ok) throw new Error(j.error || r.statusText);
@@ -150,7 +217,7 @@ export default function App() {
     if (!subject && !body) return;
     const r = await fetch("/api/email/eml", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ to: emailTo, subject, body }),
+      body: JSON.stringify({ to: emailTo, subject, body, provider, model }),
     });
     const blob = await r.blob();
     const url = URL.createObjectURL(blob);
@@ -181,7 +248,20 @@ export default function App() {
       <Card>
         <CardHeader><CardTitle>Nhập văn bản (dùng chung cho các tab)</CardTitle></CardHeader>
         <CardContent>
-          <textarea ref={inputRef} rows={8} className="textarea" placeholder="Dán nội dung ở đây..." />
+          <div className="flex gap-2 mb-2">
+            <select value={provider} onChange={onProviderChange} className="select">
+              <option value="openai">OpenAI</option>
+              <option value="deepseek">DeepSeek</option>
+              <option value="ollama">Ollama (local)</option>
+            </select>
+
+            <select value={model} onChange={(e)=>setModel(e.target.value)} className="select">
+              {modelsFor(provider).map(m => (
+                <option key={m} value={m}>{m}</option>
+              ))}
+            </select>
+          </div>
+          <textarea ref={inputRef} rows={8} className="textarea" placeholder="Dán nội dung ở đây nhaa..." />
         </CardContent>
       </Card>
 
@@ -225,7 +305,7 @@ export default function App() {
 
       <TabPanel id="tab-image" active={activeTab==="image"}>
         <div className="space-y-3">
-          <textarea value={imgPrompt} onChange={e=>setImgPrompt(e.target.value)} rows={3} className="w-full p-3 input" placeholder="Ví dụ: 'a cozy reading nook with plants, soft morning light'" />
+          <textarea value={imgPrompt} onChange={e=>setImgPrompt(e.target.value)} rows={3} className="w-full p-3 input" placeholder="Ví dụ: 'tạo một chiếc xe oto màu hồng, nó đang chạy trên sông ...'" />
           <div className="flex flex-wrap items-center gap-3 text-sm">
             <label>Ảnh: <select value={imgN} onChange={e=>setImgN(parseInt(e.target.value))} className="input"><option>1</option><option>2</option><option>3</option></select></label>
             <label>Kích thước: <select value={imgSize} onChange={e=>setImgSize(e.target.value)} className="input"><option value="512x512">512x512</option><option value="1024x1024">1024x1024</option></select></label>
